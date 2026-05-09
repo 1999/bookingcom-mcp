@@ -1,7 +1,12 @@
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import type { Browser, BrowserContext, Page, Route } from "playwright";
-import type { ReviewListFrontendInput, ReviewListResult } from "./queries.js";
+import type {
+  FilterItem,
+  RatingScore,
+  ReviewListFrontendInput,
+  ReviewListFullResult,
+} from "./queries.js";
 
 chromium.use(StealthPlugin());
 
@@ -13,7 +18,7 @@ interface CapturedSession {
   baseInput: ReviewListFrontendInput;
   /** The exact query string Booking.com's frontend sent — always valid */
   query: string;
-  /** Variable names declared in the query (so we can pass them correctly) */
+  /** Variable names declared in the query */
   queryVariableNames: string[];
   capturedAt: number;
 }
@@ -23,7 +28,11 @@ interface GraphQLResponse {
     reviewListFrontend?: {
       __typename: string;
       reviewsCount?: number;
-      reviewCard?: ReviewListResult["reviewCard"];
+      reviewCard?: ReviewListFullResult["reviewCard"];
+      ratingScores?: RatingScore[];
+      reviewScoreFilter?: FilterItem[];
+      customerTypeFilter?: FilterItem[];
+      languageFilter?: FilterItem[];
       statusCode?: number;
       message?: string;
     };
@@ -31,7 +40,6 @@ interface GraphQLResponse {
   errors?: Array<{ message: string }>;
 }
 
-/** Extract all variable names declared in a GraphQL query string */
 function parseVariableNames(query: string): string[] {
   const matches = query.match(/\$(\w+)/g) ?? [];
   return [...new Set(matches.map((m) => m.slice(1)))];
@@ -48,10 +56,7 @@ export class BookingBrowser {
 
     this.browser = await chromium.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-blink-features=AutomationControlled",
-      ],
+      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
     }) as unknown as Browser;
 
     this.context = await this.browser.newContext({
@@ -78,11 +83,7 @@ export class BookingBrowser {
 
       const routeHandler = async (route: Route) => {
         const request = route.request();
-
-        if (request.method() !== "POST") {
-          await route.continue();
-          return;
-        }
+        if (request.method() !== "POST") { await route.continue(); return; }
 
         const bodyText = request.postData() ?? "";
         let body: {
@@ -90,24 +91,17 @@ export class BookingBrowser {
           query?: string;
           variables?: { input?: ReviewListFrontendInput; [key: string]: unknown };
         };
-        try {
-          body = JSON.parse(bodyText);
-        } catch {
-          await route.continue();
-          return;
-        }
+        try { body = JSON.parse(bodyText); }
+        catch { await route.continue(); return; }
 
         if (body.operationName !== "ReviewList" || !body.query || !body.variables?.input) {
-          await route.continue();
-          return;
+          await route.continue(); return;
         }
 
         const rawHeaders = request.headers();
         const headers: Record<string, string> = {};
         for (const [k, v] of Object.entries(rawHeaders)) {
-          if (!["host", "content-length"].includes(k.toLowerCase())) {
-            headers[k] = v;
-          }
+          if (!["host", "content-length"].includes(k.toLowerCase())) headers[k] = v;
         }
 
         const session: CapturedSession = {
@@ -134,47 +128,47 @@ export class BookingBrowser {
         .route("**/dml/graphql**", routeHandler)
         .then(() => page.goto(hotelUrl, { waitUntil: "networkidle", timeout: 45000 }))
         .then(async () => {
-          // Step 1: scroll to and click the "Guest reviews" tab to reveal the review section
+          await page.waitForTimeout(3000);
+
+          // Step 1: click the "Guest reviews" tab
           try {
-            const reviewTab = page.locator('a').filter({ hasText: /Guest reviews/i }).first();
+            const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
             await reviewTab.scrollIntoViewIfNeeded({ timeout: 5000 });
             await reviewTab.click({ timeout: 5000 });
             await page.waitForTimeout(2000);
           } catch {
-            // try generic scroll
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
             await page.waitForTimeout(2000);
           }
 
-          // Step 2: the ReviewList request fires on pagination — click page 2
-          // (the first page of reviews is often server-rendered, not via GraphQL)
+          // Step 2: click page 2 pagination — this triggers the ReviewList GraphQL request
           try {
-            const page2Btn = page.locator('button[aria-label=" 2"], button').filter({ hasText: /^2$/ }).first();
+            const page2Btn = page
+              .locator('button[aria-label=" 2"], button')
+              .filter({ hasText: /^2$/ })
+              .first();
             await page2Btn.waitFor({ timeout: 8000 });
             await page2Btn.scrollIntoViewIfNeeded();
             await page2Btn.click({ timeout: 5000 });
             await page.waitForTimeout(3000);
           } catch {
-            // fallback: try "Read all reviews" button
+            // fallback: "Read all reviews" button
             try {
-              const readAllBtn = page.locator('button').filter({ hasText: /Read all reviews/i }).first();
-              await readAllBtn.click({ timeout: 5000 });
+              await page.locator("button").filter({ hasText: /Read all reviews/i }).first().click({ timeout: 5000 });
               await page.waitForTimeout(3000);
             } catch { /* ignore */ }
           }
 
-          // Step 3: last resort — scroll to bottom to trigger any lazy-loaded GraphQL
+          // Last resort: scroll to bottom
           if (!resolved) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
             await page.waitForTimeout(5000);
           }
 
           if (!resolved) {
-            reject(
-              new Error(
-                "ReviewList GraphQL request was not captured. Booking.com's bot detection may have blocked the headless browser. Try again."
-              )
-            );
+            reject(new Error(
+              "ReviewList GraphQL request was not captured. Booking.com's bot detection may have blocked the headless browser. Try again."
+            ));
           }
         })
         .catch(reject);
@@ -184,27 +178,20 @@ export class BookingBrowser {
   async callGraphQL(
     session: CapturedSession,
     input: ReviewListFrontendInput
-  ): Promise<ReviewListResult> {
+  ): Promise<ReviewListFullResult> {
     await this.launch();
     const page = this.page!;
 
-    // Build variables object — only include variable names declared in the captured query
+    // Build variables — supply defaults for all declared query variables
     const variables: Record<string, unknown> = { input };
     for (const varName of session.queryVariableNames) {
       if (varName !== "input" && !(varName in variables)) {
-        // Provide sensible defaults for known optional variables
         if (varName === "shouldShowReviewListPhotoAltText") variables[varName] = false;
       }
     }
 
     const result = await page.evaluate(
-      async ({
-        url,
-        headers,
-        query,
-        operationName,
-        variables,
-      }: {
+      async ({ url, headers, query, operationName, variables }: {
         url: string;
         headers: Record<string, string>;
         query: string;
@@ -233,9 +220,7 @@ export class BookingBrowser {
     }
 
     const frontend = result.data?.reviewListFrontend;
-    if (!frontend) {
-      throw new Error("No reviewListFrontend in response");
-    }
+    if (!frontend) throw new Error("No reviewListFrontend in response");
 
     if (frontend.__typename === "ReviewsFrontendError") {
       throw new Error(`Booking.com API error ${frontend.statusCode}: ${frontend.message}`);
@@ -244,6 +229,10 @@ export class BookingBrowser {
     return {
       reviewsCount: frontend.reviewsCount ?? 0,
       reviewCard: frontend.reviewCard ?? [],
+      ratingScores: frontend.ratingScores ?? [],
+      reviewScoreFilter: frontend.reviewScoreFilter ?? [],
+      customerTypeFilter: frontend.customerTypeFilter ?? [],
+      languageFilter: frontend.languageFilter ?? [],
     };
   }
 
@@ -256,3 +245,4 @@ export class BookingBrowser {
 }
 
 export const bookingBrowser = new BookingBrowser();
+export type { CapturedSession };

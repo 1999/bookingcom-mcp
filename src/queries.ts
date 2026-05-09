@@ -93,6 +93,8 @@ query ReviewList($input: ReviewListFrontendInput!) {
 }
 `.trim();
 
+// ── Per-review types ──────────────────────────────────────────────────────────
+
 export interface RoomType {
   id: number;
   name: string;
@@ -134,7 +136,7 @@ export interface ReviewCard {
   reviewUrl: string;
   guestDetails: GuestDetails;
   bookingDetails: BookingDetails;
-  reviewedDate: number;
+  reviewedDate: number; // unix timestamp
   isTranslatable: boolean;
   helpfulVotesCount: number;
   reviewScore: number;
@@ -144,10 +146,39 @@ export interface ReviewCard {
   __typename: string;
 }
 
+// ── Aggregate / metadata types ────────────────────────────────────────────────
+
+export interface RatingScore {
+  name: string;        // e.g. "cleanliness"
+  translation: string; // e.g. "Cleanliness"
+  value: number;       // 0–10
+  __typename: string;
+}
+
+export interface FilterItem {
+  name: string;   // display label
+  value: string;  // machine value / score threshold
+  count: number;
+  __typename: string;
+}
+
+// ── Result types ──────────────────────────────────────────────────────────────
+
+/** Basic list result (used by get_hotel_reviews) */
 export interface ReviewListResult {
   reviewsCount: number;
   reviewCard: ReviewCard[];
 }
+
+/** Full result including hotel-wide aggregates (used by summarize_hotel) */
+export interface ReviewListFullResult extends ReviewListResult {
+  ratingScores: RatingScore[];
+  reviewScoreFilter: FilterItem[];
+  customerTypeFilter: FilterItem[];
+  languageFilter: FilterItem[];
+}
+
+// ── Input type ────────────────────────────────────────────────────────────────
 
 export interface ReviewListFrontendInput {
   hotelId: number;
