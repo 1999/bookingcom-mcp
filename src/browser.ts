@@ -6,6 +6,7 @@ import type {
   RatingScore,
   ReviewListFrontendInput,
   ReviewListFullResult,
+  Sorter,
 } from "./queries.js";
 
 chromium.use(StealthPlugin());
@@ -21,6 +22,8 @@ interface CapturedSession {
   /** Variable names declared in the query */
   queryVariableNames: string[];
   capturedAt: number;
+  /** Sorter values returned by the API — populated after first callGraphQL */
+  sorters: Sorter[];
 }
 
 interface GraphQLResponse {
@@ -33,6 +36,7 @@ interface GraphQLResponse {
       reviewScoreFilter?: FilterItem[];
       customerTypeFilter?: FilterItem[];
       languageFilter?: FilterItem[];
+      sorters?: Sorter[];
       statusCode?: number;
       message?: string;
     };
@@ -78,7 +82,7 @@ export class BookingBrowser {
     await this.launch();
     const page = this.page!;
 
-    return new Promise<CapturedSession>((resolve, reject) => {
+    const session = await new Promise<CapturedSession>((resolve, reject) => {
       let resolved = false;
 
       const routeHandler = async (route: Route) => {
@@ -110,6 +114,7 @@ export class BookingBrowser {
           query: body.query,
           queryVariableNames: parseVariableNames(body.query),
           capturedAt: Date.now(),
+          sorters: [],
         };
 
         this.sessionCache.set(hotelUrl, session);
@@ -126,7 +131,7 @@ export class BookingBrowser {
 
       page
         .route("**/dml/graphql**", routeHandler)
-        .then(() => page.goto(hotelUrl, { waitUntil: "networkidle", timeout: 45000 }))
+        .then(() => page.goto(hotelUrl, { waitUntil: "load", timeout: 45000 }))
         .then(async () => {
           await page.waitForTimeout(3000);
 
@@ -173,6 +178,16 @@ export class BookingBrowser {
         })
         .catch(reject);
     });
+
+    // Probe to populate available sorter values for this hotel
+    if (session.sorters.length === 0) {
+      try {
+        const probe = await this.callGraphQL(session, { ...session.baseInput, skip: 0, limit: 1 });
+        if (probe.sorters.length > 0) session.sorters = probe.sorters;
+      } catch { /* sorters stay empty; fallback strings will be used */ }
+    }
+
+    return session;
   }
 
   async callGraphQL(
@@ -226,6 +241,17 @@ export class BookingBrowser {
       throw new Error(`Booking.com API error ${frontend.statusCode}: ${frontend.message}`);
     }
 
+    const sorters = frontend.sorters ?? [];
+
+    // Persist sorters into the session cache so callers can resolve actual API values
+    for (const [url, cached] of this.sessionCache) {
+      if (cached === session && sorters.length > 0) {
+        cached.sorters = sorters;
+        this.sessionCache.set(url, cached);
+        break;
+      }
+    }
+
     return {
       reviewsCount: frontend.reviewsCount ?? 0,
       reviewCard: frontend.reviewCard ?? [],
@@ -233,7 +259,20 @@ export class BookingBrowser {
       reviewScoreFilter: frontend.reviewScoreFilter ?? [],
       customerTypeFilter: frontend.customerTypeFilter ?? [],
       languageFilter: frontend.languageFilter ?? [],
+      sorters,
     };
+  }
+
+  /**
+   * Resolve the API-accepted sorter value for a user-facing label.
+   * Falls back to `fallback` if sorters haven't been populated yet.
+   * Matching is case-insensitive substring on the sorter name.
+   */
+  resolveSorter(session: CapturedSession, label: string, fallback: string): string {
+    const match = session.sorters.find((s) =>
+      s.name.toLowerCase().includes(label.toLowerCase())
+    );
+    return match?.value ?? fallback;
   }
 
   async close(): Promise<void> {
