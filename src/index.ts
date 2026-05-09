@@ -1,9 +1,27 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { watch } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import { z } from "zod";
 import { getHotelReviews } from "./tools/get-reviews.js";
 import { summarizeHotel } from "./tools/summarize-hotel.js";
 import { bookingBrowser } from "./browser.js";
+
+// ── Dev-mode self-restart ─────────────────────────────────────────────────────
+// Watch src/ for .ts changes and exit cleanly — Claude Desktop will respawn
+// the process, causing tsx to recompile the updated files.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const srcDir = resolve(__dirname, ".");
+let restartTimer: ReturnType<typeof setTimeout> | null = null;
+watch(srcDir, { recursive: true }, (_event, filename) => {
+  if (!filename?.endsWith(".ts")) return;
+  if (restartTimer) return; // debounce
+  restartTimer = setTimeout(() => {
+    process.stderr.write(`[bookingcom-mcp] ${filename} changed — restarting\n`);
+    bookingBrowser.close().finally(() => process.exit(0));
+  }, 300);
+});
 
 const server = new McpServer({
   name: "bookingcom-reviews",
