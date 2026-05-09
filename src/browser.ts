@@ -94,7 +94,7 @@ export class BookingBrowser {
 
     this.browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled", "--ignore-certificate-errors"],
     }) as unknown as Browser;
 
     this.context = await this.browser.newContext({
@@ -102,6 +102,7 @@ export class BookingBrowser {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       viewport: { width: 1280, height: 800 },
       locale: "en-GB",
+      ignoreHTTPSErrors: true,
     });
 
     this.page = await this.context.newPage();
