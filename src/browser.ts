@@ -133,17 +133,17 @@ export class BookingBrowser {
         .route("**/dml/graphql**", routeHandler)
         .then(() => page.goto(hotelUrl, { waitUntil: "load", timeout: 45000 }))
         .then(async () => {
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(1500);
 
           // Step 1: click the "Guest reviews" tab
           try {
             const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
             await reviewTab.scrollIntoViewIfNeeded({ timeout: 5000 });
             await reviewTab.click({ timeout: 5000 });
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(1000);
           } catch {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(1000);
           }
 
           // Step 2: click page 2 pagination — this triggers the ReviewList GraphQL request
@@ -155,19 +155,19 @@ export class BookingBrowser {
             await page2Btn.waitFor({ timeout: 8000 });
             await page2Btn.scrollIntoViewIfNeeded();
             await page2Btn.click({ timeout: 5000 });
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(1500);
           } catch {
             // fallback: "Read all reviews" button
             try {
               await page.locator("button").filter({ hasText: /Read all reviews/i }).first().click({ timeout: 5000 });
-              await page.waitForTimeout(3000);
+              await page.waitForTimeout(1500);
             } catch { /* ignore */ }
           }
 
           // Last resort: scroll to bottom
           if (!resolved) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(5000);
+            await page.waitForTimeout(2500);
           }
 
           if (!resolved) {
@@ -218,6 +218,7 @@ export class BookingBrowser {
           credentials: "include",
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({ operationName, query, variables }),
+          signal: AbortSignal.timeout(20000),
         });
         return resp.json() as Promise<GraphQLResponse>;
       },
