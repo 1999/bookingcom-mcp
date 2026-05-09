@@ -28,6 +28,21 @@ const server = new McpServer({
   version: "0.2.0",
 });
 
+const TOOL_TIMEOUT_MS = 120_000;
+
+function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+  });
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
 // ── Tool: get_hotel_reviews ───────────────────────────────────────────────────
 
 server.tool(
@@ -69,7 +84,11 @@ server.tool(
           }
         : undefined;
 
-      const text = await getHotelReviews(input, onBatch);
+      const text = await withTimeout(
+        getHotelReviews(input, onBatch),
+        TOOL_TIMEOUT_MS,
+        "get_hotel_reviews",
+      );
       return { content: [{ type: "text", text }] };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -98,7 +117,11 @@ server.tool(
   },
   async (input) => {
     try {
-      const text = await summarizeHotel(input);
+      const text = await withTimeout(
+        summarizeHotel(input),
+        TOOL_TIMEOUT_MS,
+        "summarize_hotel",
+      );
       return { content: [{ type: "text", text }] };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

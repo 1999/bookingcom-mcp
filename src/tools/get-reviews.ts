@@ -97,11 +97,13 @@ export async function getHotelReviews(
 
   if (remaining.length > 0) {
     // Worker-pool pattern: N workers drain the shared queue concurrently
-    const queue = [...remaining];
+    let nextIdx = 0;
     await Promise.all(
-      Array.from({ length: Math.min(MAX_CONCURRENT_FETCHES, queue.length) }, async () => {
-        while (queue.length > 0) {
-          const offset = queue.shift()!;
+      Array.from({ length: Math.min(MAX_CONCURRENT_FETCHES, remaining.length) }, async () => {
+        while (true) {
+          const i = nextIdx++;
+          if (i >= remaining.length) return;
+          const offset = remaining[i];
           const result = await bookingBrowser.callGraphQL(session, {
             ...session.baseInput,
             sorter: sorterValue,

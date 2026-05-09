@@ -37,10 +37,16 @@ export function computeStats(
     return { mean: 0, stdDev: 0, ci: { lower: 0, upper: 0, margin: 0 }, n: 0 };
   }
 
-  const mean = scores.reduce((a, b) => a + b, 0) / n;
-  const variance = n > 1
-    ? scores.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)
-    : 0;
+  // Welford's online algorithm: mean and variance in a single pass.
+  let mean = 0;
+  let m2 = 0;
+  for (let i = 0; i < n; i++) {
+    const x = scores[i];
+    const delta = x - mean;
+    mean += delta / (i + 1);
+    m2 += delta * (x - mean);
+  }
+  const variance = n > 1 ? m2 / (n - 1) : 0;
   const stdDev = Math.sqrt(variance);
   const se = stdDev / Math.sqrt(n);
   const z = zScore(confidence);
@@ -95,6 +101,7 @@ export function scoreTrend(scores: number[]): {
  * actually achieve?"
  */
 export function achievedMargin(n: number, N: number, confidence = 0.95): number {
+  if (n <= 0 || N <= 1) return 0;
   const z = zScore(confidence);
   // Standard error for a proportion with p=0.5 (worst case), FPC applied
   const se = Math.sqrt((0.25 / n) * (1 - (n - 1) / (N - 1)));

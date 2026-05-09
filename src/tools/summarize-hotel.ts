@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { bookingBrowser } from "../browser.js";
-import type { FilterItem, RatingScore, ReviewCard, ReviewListFrontendInput, ReviewListFullResult } from "../queries.js";
+import type { FilterItem, RatingScore, ReviewCard, ReviewListFrontendInput } from "../queries.js";
 import { achievedMargin, computeStats, requiredSampleSize, scoreTrend } from "../stats.js";
 
 const PAGE_SIZE = 25;
-const REQUEST_DELAY_MS = 250; // be polite between pages
+const MAX_CONCURRENT_FETCHES = 4;
 
 export const SummarizeHotelSchema = z.object({
   url: z
@@ -28,63 +28,71 @@ export type SummarizeHotelInput = z.infer<typeof SummarizeHotelSchema>;
 
 interface FetchResult {
   reviews: ReviewCard[];
-  firstPageMeta: ReviewListFullResult;   // ratingScores, filters — global stats from API
   hitDateCutoff: boolean;
-  oldestReviewDate: Date | null;
-  newestReviewDate: Date | null;
 }
 
 async function fetchRecentReviews(
   session: Awaited<ReturnType<typeof bookingBrowser.ensureSession>>,
   baseInput: ReviewListFrontendInput,
   cutoffTimestamp: number,   // unix seconds
-  targetN: number
+  targetN: number,
+  startSkip: number
 ): Promise<FetchResult> {
-  const reviews: ReviewCard[] = [];
-  let firstPageMeta: ReviewListFullResult | null = null;
-  let hitDateCutoff = false;
-  let skip = 0;
-
   const mostRecentSorter = bookingBrowser.resolveSorter(session, "newest", "NEWEST_FIRST");
 
-  while (reviews.length < targetN) {
-    const input: ReviewListFrontendInput = {
-      ...baseInput,
-      sorter: mostRecentSorter,
-      filters: { text: "" },
-      skip,
-      limit: PAGE_SIZE,
-    };
-
-    const page = await bookingBrowser.callGraphQL(session, input);
-
-    if (!firstPageMeta) firstPageMeta = page;
-
-    for (const review of page.reviewCard) {
-      if (review.reviewedDate < cutoffTimestamp) {
-        hitDateCutoff = true;
-        break;
-      }
-      reviews.push(review);
-    }
-
-    if (hitDateCutoff || page.reviewCard.length < PAGE_SIZE) break;
-
-    skip += PAGE_SIZE;
-
-    if (reviews.length < targetN) {
-      await new Promise((r) => setTimeout(r, REQUEST_DELAY_MS));
-    }
+  // Plan all offsets we might need upfront, then drain them concurrently.
+  const offsets: number[] = [];
+  for (let count = 0, off = startSkip; count < targetN; count += PAGE_SIZE, off += PAGE_SIZE) {
+    offsets.push(off);
   }
 
-  const dates = reviews.map((r) => r.reviewedDate);
-  return {
-    reviews,
-    firstPageMeta: firstPageMeta!,
-    hitDateCutoff,
-    oldestReviewDate: dates.length ? new Date(Math.min(...dates) * 1000) : null,
-    newestReviewDate: dates.length ? new Date(Math.max(...dates) * 1000) : null,
-  };
+  const resultsByOffset = new Map<number, ReviewCard[]>();
+  let nextIdx = 0;
+  let stop = false;
+
+  await Promise.all(
+    Array.from({ length: Math.min(MAX_CONCURRENT_FETCHES, offsets.length) }, async () => {
+      while (!stop) {
+        const i = nextIdx++;
+        if (i >= offsets.length) return;
+        const offset = offsets[i];
+        const page = await bookingBrowser.callGraphQL(session, {
+          ...baseInput,
+          sorter: mostRecentSorter,
+          filters: { text: "" },
+          skip: offset,
+          limit: PAGE_SIZE,
+        });
+        resultsByOffset.set(offset, page.reviewCard);
+        // Stop scheduling further pages if this one already crosses the cutoff
+        // or if the API returned a short page (no more reviews).
+        if (page.reviewCard.length < PAGE_SIZE) stop = true;
+        else if (page.reviewCard.length > 0 &&
+                 page.reviewCard[page.reviewCard.length - 1].reviewedDate < cutoffTimestamp) {
+          stop = true;
+        }
+      }
+    })
+  );
+
+  // Merge in offset order, applying the date cutoff and the targetN limit.
+  const sortedOffsets = [...resultsByOffset.keys()].sort((a, b) => a - b);
+  const reviews: ReviewCard[] = [];
+  let hitDateCutoff = false;
+  outer: for (const offset of sortedOffsets) {
+    const cards = resultsByOffset.get(offset)!;
+    for (const r of cards) {
+      if (r.reviewedDate < cutoffTimestamp) {
+        hitDateCutoff = true;
+        break outer;
+      }
+      reviews.push(r);
+      if (reviews.length >= targetN) break outer;
+    }
+    if (cards.length < PAGE_SIZE) break;
+  }
+
+  return { reviews, hitDateCutoff };
 }
 
 // ── formatting helpers ────────────────────────────────────────────────────────
@@ -120,10 +128,12 @@ function formatScoreDistribution(filters: FilterItem[], totalReviews: number): s
   // API returns buckets like value="9" (meaning 9–10), value="7" (7–8), etc.
   // Sort descending by score value
   const sorted = [...filters].sort((a, b) => Number(b.value) - Number(a.value));
+  let maxCount = 0;
+  for (const f of filters) if (f.count > maxCount) maxCount = f.count;
   return sorted
     .map((f) => {
       const p = pct(f.count, totalReviews);
-      return `  ${f.name.padEnd(16)} ${bar(f.count, Math.max(...filters.map(x => x.count)))}  ${p.padStart(4)} (${f.count.toLocaleString()})`;
+      return `  ${f.name.padEnd(16)} ${bar(f.count, maxCount)}  ${p.padStart(4)} (${f.count.toLocaleString()})`;
     })
     .join("\n") + "\n";
 }
@@ -245,16 +255,22 @@ export async function summarizeHotel(rawInput: unknown): Promise<string> {
       session,
       baseInput,
       cutoffTimestamp,
-      targetN - filteredFirstPage.length
+      targetN - filteredFirstPage.length,
+      PAGE_SIZE,
     );
     additionalReviews.push(...rest.reviews);
     if (rest.hitDateCutoff) hitDateCutoff = true;
   }
 
-  const allReviews = [...filteredFirstPage, ...additionalReviews];
-  const dates = allReviews.map((r) => r.reviewedDate);
-  const newestDate = dates.length ? new Date(Math.max(...dates) * 1000) : null;
-  const oldestDate = dates.length ? new Date(Math.min(...dates) * 1000) : null;
+  const allReviews = filteredFirstPage.concat(additionalReviews);
+  let minTs = Infinity;
+  let maxTs = -Infinity;
+  for (const r of allReviews) {
+    if (r.reviewedDate < minTs) minTs = r.reviewedDate;
+    if (r.reviewedDate > maxTs) maxTs = r.reviewedDate;
+  }
+  const newestDate = allReviews.length ? new Date(maxTs * 1000) : null;
+  const oldestDate = allReviews.length ? new Date(minTs * 1000) : null;
 
   // ── Format output ────────────────────────────────────────────────────────
   const lines: string[] = [
