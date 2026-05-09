@@ -13,6 +13,17 @@ chromium.use(StealthPlugin());
 
 const SESSION_TTL_MS = 20 * 60 * 60 * 1000; // 20 hours
 const GRAPHQL_URL = "https://www.booking.com/dml/graphql";
+const SESSION_CACHE_MAX = 64;
+
+const TIMEOUTS = {
+  navigate: 45_000,
+  graphql: 20_000,
+  click: 5_000,
+  page2Wait: 8_000,
+  settle: 1_500,
+  postClick: 1_000,
+  scrollSettle: 2_500,
+} as const;
 
 interface CapturedSession {
   headers: Record<string, string>;
@@ -54,6 +65,29 @@ export class BookingBrowser {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private sessionCache = new Map<string, CapturedSession>();
+  private pendingSessions = new Map<string, Promise<CapturedSession>>();
+
+  private cacheGet(hotelUrl: string): CapturedSession | undefined {
+    const cached = this.sessionCache.get(hotelUrl);
+    if (!cached) return undefined;
+    if (Date.now() - cached.capturedAt >= SESSION_TTL_MS) {
+      this.sessionCache.delete(hotelUrl);
+      return undefined;
+    }
+    // Refresh LRU recency.
+    this.sessionCache.delete(hotelUrl);
+    this.sessionCache.set(hotelUrl, cached);
+    return cached;
+  }
+
+  private cacheSet(hotelUrl: string, session: CapturedSession): void {
+    this.sessionCache.set(hotelUrl, session);
+    while (this.sessionCache.size > SESSION_CACHE_MAX) {
+      const oldest = this.sessionCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.sessionCache.delete(oldest);
+    }
+  }
 
   private async launch(): Promise<void> {
     if (this.browser) return;
@@ -74,16 +108,33 @@ export class BookingBrowser {
   }
 
   async ensureSession(hotelUrl: string): Promise<CapturedSession> {
-    const cached = this.sessionCache.get(hotelUrl);
-    if (cached && Date.now() - cached.capturedAt < SESSION_TTL_MS) {
-      return cached;
-    }
+    const cached = this.cacheGet(hotelUrl);
+    if (cached) return cached;
 
+    const inFlight = this.pendingSessions.get(hotelUrl);
+    if (inFlight) return inFlight;
+
+    const promise = this.captureSession(hotelUrl).finally(() => {
+      this.pendingSessions.delete(hotelUrl);
+    });
+    this.pendingSessions.set(hotelUrl, promise);
+    return promise;
+  }
+
+  private async captureSession(hotelUrl: string): Promise<CapturedSession> {
     await this.launch();
     const page = this.page!;
 
     const session = await new Promise<CapturedSession>((resolve, reject) => {
       let resolved = false;
+      let settled = false;
+
+      const settle = (cb: () => void) => {
+        if (settled) return;
+        settled = true;
+        page.unroute("**/dml/graphql**").catch(() => {});
+        cb();
+      };
 
       const routeHandler = async (route: Route) => {
         const request = route.request();
@@ -108,7 +159,7 @@ export class BookingBrowser {
           if (!["host", "content-length"].includes(k.toLowerCase())) headers[k] = v;
         }
 
-        const session: CapturedSession = {
+        const captured: CapturedSession = {
           headers,
           baseInput: body.variables.input,
           query: body.query,
@@ -117,33 +168,30 @@ export class BookingBrowser {
           sorters: [],
         };
 
-        this.sessionCache.set(hotelUrl, session);
+        this.cacheSet(hotelUrl, captured);
 
+        await route.continue();
         if (!resolved) {
           resolved = true;
-          await route.continue();
-          page.unroute("**/dml/graphql**").catch(() => {});
-          resolve(session);
-        } else {
-          await route.continue();
+          settle(() => resolve(captured));
         }
       };
 
       page
         .route("**/dml/graphql**", routeHandler)
-        .then(() => page.goto(hotelUrl, { waitUntil: "load", timeout: 45000 }))
+        .then(() => page.goto(hotelUrl, { waitUntil: "load", timeout: TIMEOUTS.navigate }))
         .then(async () => {
-          await page.waitForTimeout(1500);
+          await page.waitForTimeout(TIMEOUTS.settle);
 
           // Step 1: click the "Guest reviews" tab
           try {
             const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
-            await reviewTab.scrollIntoViewIfNeeded({ timeout: 5000 });
-            await reviewTab.click({ timeout: 5000 });
-            await page.waitForTimeout(1000);
+            await reviewTab.scrollIntoViewIfNeeded({ timeout: TIMEOUTS.click });
+            await reviewTab.click({ timeout: TIMEOUTS.click });
+            await page.waitForTimeout(TIMEOUTS.postClick);
           } catch {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(TIMEOUTS.postClick);
           }
 
           // Step 2: click page 2 pagination — this triggers the ReviewList GraphQL request
@@ -152,31 +200,31 @@ export class BookingBrowser {
               .locator('button[aria-label=" 2"], button')
               .filter({ hasText: /^2$/ })
               .first();
-            await page2Btn.waitFor({ timeout: 8000 });
+            await page2Btn.waitFor({ timeout: TIMEOUTS.page2Wait });
             await page2Btn.scrollIntoViewIfNeeded();
-            await page2Btn.click({ timeout: 5000 });
-            await page.waitForTimeout(1500);
+            await page2Btn.click({ timeout: TIMEOUTS.click });
+            await page.waitForTimeout(TIMEOUTS.settle);
           } catch {
             // fallback: "Read all reviews" button
             try {
-              await page.locator("button").filter({ hasText: /Read all reviews/i }).first().click({ timeout: 5000 });
-              await page.waitForTimeout(1500);
+              await page.locator("button").filter({ hasText: /Read all reviews/i }).first().click({ timeout: TIMEOUTS.click });
+              await page.waitForTimeout(TIMEOUTS.settle);
             } catch { /* ignore */ }
           }
 
           // Last resort: scroll to bottom
           if (!resolved) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(2500);
+            await page.waitForTimeout(TIMEOUTS.scrollSettle);
           }
 
           if (!resolved) {
-            reject(new Error(
+            settle(() => reject(new Error(
               "ReviewList GraphQL request was not captured. Booking.com's bot detection may have blocked the headless browser. Try again."
-            ));
+            )));
           }
         })
-        .catch(reject);
+        .catch((err) => settle(() => reject(err)));
     });
 
     // Probe to populate available sorter values for this hotel
@@ -206,19 +254,20 @@ export class BookingBrowser {
     }
 
     const result = await page.evaluate(
-      async ({ url, headers, query, operationName, variables }: {
+      async ({ url, headers, query, operationName, variables, timeoutMs }: {
         url: string;
         headers: Record<string, string>;
         query: string;
         operationName: string;
         variables: Record<string, unknown>;
+        timeoutMs: number;
       }): Promise<GraphQLResponse> => {
         const resp = await fetch(url, {
           method: "POST",
           credentials: "include",
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({ operationName, query, variables }),
-          signal: AbortSignal.timeout(20000),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         return resp.json() as Promise<GraphQLResponse>;
       },
@@ -228,6 +277,7 @@ export class BookingBrowser {
         query: session.query,
         operationName: "ReviewList",
         variables,
+        timeoutMs: TIMEOUTS.graphql,
       }
     );
 
@@ -244,14 +294,9 @@ export class BookingBrowser {
 
     const sorters = frontend.sorters ?? [];
 
-    // Persist sorters into the session cache so callers can resolve actual API values
-    for (const [url, cached] of this.sessionCache) {
-      if (cached === session && sorters.length > 0) {
-        cached.sorters = sorters;
-        this.sessionCache.set(url, cached);
-        break;
-      }
-    }
+    // The session passed in is the same object stored in sessionCache,
+    // so mutating it is enough — no scan needed.
+    if (sorters.length > 0) session.sorters = sorters;
 
     return {
       reviewsCount: frontend.reviewsCount ?? 0,
