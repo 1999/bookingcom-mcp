@@ -9,7 +9,7 @@ export const GetHotelReviewsSchema = z.object({
     .refine((u) => u.includes("booking.com/hotel/"), {
       message: "Must be a booking.com hotel page URL (booking.com/hotel/...)",
     }),
-  limit: z.number().int().min(1).max(50).default(10),
+  limit: z.number().int().min(1).max(1000).default(10),
   skip: z.number().int().min(0).default(0),
   sortBy: z.enum(["MOST_RELEVANT", "MOST_RECENT"]).default("MOST_RELEVANT"),
 });
@@ -41,7 +41,12 @@ function formatReview(review: ReviewCard, index: number): string {
   return lines.join("\n");
 }
 
-export async function getHotelReviews(rawInput: unknown): Promise<string> {
+const MAX_PAGE_SIZE = 25;
+
+export async function getHotelReviews(
+  rawInput: unknown,
+  onBatch?: (text: string, fetched: number, total: number) => Promise<void>
+): Promise<string> {
   const input = GetHotelReviewsSchema.parse(rawInput);
 
   // Normalise URL: strip query string / fragments, keep clean hotel path
@@ -54,22 +59,41 @@ export async function getHotelReviews(rawInput: unknown): Promise<string> {
   const sorterFallback = input.sortBy === "MOST_RECENT" ? "NEWEST_FIRST" : "MOST_RELEVANT";
   const sorterValue = bookingBrowser.resolveSorter(session, sorterLabel, sorterFallback);
 
-  const queryInput: ReviewListFrontendInput = {
-    ...session.baseInput,
-    sorter: sorterValue,
-    filters: { text: "" },
-    skip: input.skip,
-    limit: input.limit,
-  };
+  const allParts: string[] = [];
+  let fetched = 0;
+  let reviewsCount = 0;
 
-  const result = await bookingBrowser.callGraphQL(session, queryInput);
+  while (fetched < input.limit) {
+    const batchLimit = Math.min(MAX_PAGE_SIZE, input.limit - fetched);
+    const queryInput: ReviewListFrontendInput = {
+      ...session.baseInput,
+      sorter: sorterValue,
+      filters: { text: "" },
+      skip: input.skip + fetched,
+      limit: batchLimit,
+    };
 
-  if (result.reviewCard.length === 0) {
-    return `No reviews found for this hotel (total reported: ${result.reviewsCount}).`;
+    const result = await bookingBrowser.callGraphQL(session, queryInput);
+    reviewsCount = result.reviewsCount;
+
+    if (result.reviewCard.length === 0) break;
+
+    const batchText = result.reviewCard
+      .map((card, i) => formatReview(card, fetched + i))
+      .join("\n\n");
+
+    allParts.push(batchText);
+    fetched += result.reviewCard.length;
+
+    await onBatch?.(batchText, fetched, Math.min(input.limit, reviewsCount));
+
+    if (fetched >= reviewsCount) break;
   }
 
-  const header = `Hotel has ${result.reviewsCount} reviews total. Showing ${result.reviewCard.length} (skip=${input.skip}, limit=${input.limit}, sort=${input.sortBy}):\n`;
-  const body = result.reviewCard.map(formatReview).join("\n\n");
+  if (allParts.length === 0) {
+    return `No reviews found for this hotel (total reported: ${reviewsCount}).`;
+  }
 
-  return header + "\n" + body;
+  const header = `Hotel has ${reviewsCount} reviews total. Showing ${fetched} (skip=${input.skip}, limit=${input.limit}, sort=${input.sortBy}):\n`;
+  return header + "\n" + allParts.join("\n\n");
 }

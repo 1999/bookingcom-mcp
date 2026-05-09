@@ -42,9 +42,9 @@ server.tool(
       .number()
       .int()
       .min(1)
-      .max(50)
+      .max(1000)
       .default(10)
-      .describe("Number of reviews to return (1–50, default 10)"),
+      .describe("Number of reviews to return (1–1000, default 10). Fetched in pages of 25."),
     skip: z
       .number()
       .int()
@@ -56,9 +56,20 @@ server.tool(
       .default("MOST_RELEVANT")
       .describe("Sort order: MOST_RELEVANT or MOST_RECENT"),
   },
-  async (input) => {
+  async (input, extra) => {
     try {
-      const text = await getHotelReviews(input);
+      const progressToken = extra._meta?.progressToken;
+
+      const onBatch = progressToken
+        ? async (batchText: string, fetched: number, total: number) => {
+            await extra.sendNotification({
+              method: "notifications/progress",
+              params: { progressToken, progress: fetched, total, message: batchText },
+            });
+          }
+        : undefined;
+
+      const text = await getHotelReviews(input, onBatch);
       return { content: [{ type: "text", text }] };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
