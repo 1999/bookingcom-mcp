@@ -50,9 +50,13 @@ export async function getHotelReviews(rawInput: unknown): Promise<string> {
 
   const session = await bookingBrowser.ensureSession(cleanUrl);
 
+  const sorterLabel = input.sortBy === "MOST_RECENT" ? "newest" : "relevant";
+  const sorterFallback = input.sortBy === "MOST_RECENT" ? "NEWEST_FIRST" : "MOST_RELEVANT";
+  const sorterValue = bookingBrowser.resolveSorter(session, sorterLabel, sorterFallback);
+
   const queryInput: ReviewListFrontendInput = {
     ...session.baseInput,
-    sorter: input.sortBy,
+    sorter: sorterValue,
     filters: { text: "" },
     skip: input.skip,
     limit: input.limit,

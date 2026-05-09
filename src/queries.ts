@@ -148,6 +148,12 @@ export interface ReviewCard {
 
 // ── Aggregate / metadata types ────────────────────────────────────────────────
 
+export interface Sorter {
+  name: string;  // e.g. "Most relevant"
+  value: string; // the API-accepted sorter string
+  __typename: string;
+}
+
 export interface RatingScore {
   name: string;        // e.g. "cleanliness"
   translation: string; // e.g. "Cleanliness"
@@ -176,6 +182,7 @@ export interface ReviewListFullResult extends ReviewListResult {
   reviewScoreFilter: FilterItem[];
   customerTypeFilter: FilterItem[];
   languageFilter: FilterItem[];
+  sorters: Sorter[];
 }
 
 // ── Input type ────────────────────────────────────────────────────────────────

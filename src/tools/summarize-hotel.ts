@@ -45,10 +45,12 @@ async function fetchRecentReviews(
   let hitDateCutoff = false;
   let skip = 0;
 
+  const mostRecentSorter = bookingBrowser.resolveSorter(session, "newest", "NEWEST_FIRST");
+
   while (reviews.length < targetN) {
     const input: ReviewListFrontendInput = {
       ...baseInput,
-      sorter: "MOST_RECENT",
+      sorter: mostRecentSorter,
       filters: { text: "" },
       skip,
       limit: PAGE_SIZE,
@@ -211,10 +213,12 @@ export async function summarizeHotel(rawInput: unknown): Promise<string> {
   const session = await bookingBrowser.ensureSession(cleanUrl);
   const baseInput = session.baseInput;
 
+  const mostRecentSorterValue = bookingBrowser.resolveSorter(session, "newest", "NEWEST_FIRST");
+
   // First, fetch one page to get totalReviews and global metadata
   const firstPage = await bookingBrowser.callGraphQL(session, {
     ...baseInput,
-    sorter: "MOST_RECENT",
+    sorter: mostRecentSorterValue,
     filters: { text: "" },
     skip: 0,
     limit: PAGE_SIZE,
