@@ -42,6 +42,7 @@ function formatReview(review: ReviewCard, index: number): string {
 }
 
 const MAX_PAGE_SIZE = 25;
+const MAX_CONCURRENT_FETCHES = 4;
 
 export async function getHotelReviews(
   rawInput: unknown,
@@ -49,7 +50,6 @@ export async function getHotelReviews(
 ): Promise<string> {
   const input = GetHotelReviewsSchema.parse(rawInput);
 
-  // Normalise URL: strip query string / fragments, keep clean hotel path
   const url = new URL(input.url);
   const cleanUrl = `${url.origin}${url.pathname}`;
 
@@ -59,40 +59,67 @@ export async function getHotelReviews(
   const sorterFallback = input.sortBy === "MOST_RECENT" ? "NEWEST_FIRST" : "MOST_RELEVANT";
   const sorterValue = bookingBrowser.resolveSorter(session, sorterLabel, sorterFallback);
 
-  const allParts: string[] = [];
+  // First fetch reveals reviewsCount so we can plan all remaining pages upfront
+  const firstResult = await bookingBrowser.callGraphQL(session, {
+    ...session.baseInput,
+    sorter: sorterValue,
+    filters: { text: "" },
+    skip: input.skip,
+    limit: Math.min(MAX_PAGE_SIZE, input.limit),
+  });
+
+  if (firstResult.reviewCard.length === 0) {
+    return `No reviews found for this hotel (total reported: ${firstResult.reviewsCount}).`;
+  }
+
+  const reviewsCount = firstResult.reviewsCount;
+  const totalToFetch = Math.min(input.limit, reviewsCount);
+
+  // Keyed by page offset for in-order final assembly; fetched updated synchronously
+  // before each await so the JS single-threaded model keeps it race-free
+  const resultsByOffset = new Map<number, string>();
   let fetched = 0;
-  let reviewsCount = 0;
 
-  while (fetched < input.limit) {
-    const batchLimit = Math.min(MAX_PAGE_SIZE, input.limit - fetched);
-    const queryInput: ReviewListFrontendInput = {
-      ...session.baseInput,
-      sorter: sorterValue,
-      filters: { text: "" },
-      skip: input.skip + fetched,
-      limit: batchLimit,
-    };
+  const storeAndNotify = async (offset: number, cards: ReviewCard[]) => {
+    const text = cards.map((card, i) => formatReview(card, offset + i)).join("\n\n");
+    resultsByOffset.set(offset, text);
+    fetched += cards.length;
+    await onBatch?.(text, fetched, totalToFetch);
+  };
 
-    const result = await bookingBrowser.callGraphQL(session, queryInput);
-    reviewsCount = result.reviewsCount;
+  await storeAndNotify(0, firstResult.reviewCard);
 
-    if (result.reviewCard.length === 0) break;
-
-    const batchText = result.reviewCard
-      .map((card, i) => formatReview(card, fetched + i))
-      .join("\n\n");
-
-    allParts.push(batchText);
-    fetched += result.reviewCard.length;
-
-    await onBatch?.(batchText, fetched, Math.min(input.limit, reviewsCount));
-
-    if (fetched >= reviewsCount) break;
+  // Remaining page offsets — all independent, safe to fetch in parallel
+  const remaining: number[] = [];
+  for (let off = firstResult.reviewCard.length; off < totalToFetch; off += MAX_PAGE_SIZE) {
+    remaining.push(off);
   }
 
-  if (allParts.length === 0) {
-    return `No reviews found for this hotel (total reported: ${reviewsCount}).`;
+  if (remaining.length > 0) {
+    // Worker-pool pattern: N workers drain the shared queue concurrently
+    const queue = [...remaining];
+    await Promise.all(
+      Array.from({ length: Math.min(MAX_CONCURRENT_FETCHES, queue.length) }, async () => {
+        while (queue.length > 0) {
+          const offset = queue.shift()!;
+          const result = await bookingBrowser.callGraphQL(session, {
+            ...session.baseInput,
+            sorter: sorterValue,
+            filters: { text: "" },
+            skip: input.skip + offset,
+            limit: Math.min(MAX_PAGE_SIZE, input.limit - offset),
+          });
+          if (result.reviewCard.length > 0) {
+            await storeAndNotify(offset, result.reviewCard);
+          }
+        }
+      })
+    );
   }
+
+  const allParts = [...resultsByOffset.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, text]) => text);
 
   const header = `Hotel has ${reviewsCount} reviews total. Showing ${fetched} (skip=${input.skip}, limit=${input.limit}, sort=${input.sortBy}):\n`;
   return header + "\n" + allParts.join("\n\n");
