@@ -5,7 +5,6 @@ import { achievedMargin, computeStats, requiredSampleSize, scoreTrend } from "..
 
 const PAGE_SIZE = 25;
 const REQUEST_DELAY_MS = 250; // be polite between pages
-const MAX_REVIEWS = 150;     // hard cap to bound worst-case fetch time
 
 export const SummarizeHotelSchema = z.object({
   url: z
@@ -226,7 +225,7 @@ export async function summarizeHotel(rawInput: unknown): Promise<string> {
   });
 
   const totalReviews = firstPage.reviewsCount;
-  const targetN = Math.min(requiredSampleSize(totalReviews), MAX_REVIEWS);
+  const targetN = requiredSampleSize(totalReviews);
   const cutoffTimestamp = Math.floor(Date.now() / 1000) - input.withinMonths * 30 * 24 * 3600;
 
   // Fetch statistically significant sample of recent reviews
