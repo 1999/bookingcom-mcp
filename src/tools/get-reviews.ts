@@ -53,7 +53,9 @@ export async function getHotelReviews(
   const url = new URL(input.url);
   const cleanUrl = `${url.origin}${url.pathname}`;
 
+  // Get global CSRF session and hotel-specific baseInput
   const session = await bookingBrowser.ensureSession(cleanUrl);
+  const hotelBaseInput = await bookingBrowser.getBaseInputForHotel(cleanUrl);
 
   const sorterLabel = input.sortBy === "MOST_RECENT" ? "newest" : "relevant";
   const sorterFallback = input.sortBy === "MOST_RECENT" ? "NEWEST_FIRST" : "MOST_RELEVANT";
@@ -61,7 +63,7 @@ export async function getHotelReviews(
 
   // First fetch reveals reviewsCount so we can plan all remaining pages upfront
   const firstResult = await bookingBrowser.callGraphQL(session, {
-    ...session.baseInput,
+    ...hotelBaseInput,
     sorter: sorterValue,
     filters: { text: "" },
     skip: input.skip,
@@ -105,7 +107,7 @@ export async function getHotelReviews(
           if (i >= remaining.length) return;
           const offset = remaining[i];
           const result = await bookingBrowser.callGraphQL(session, {
-            ...session.baseInput,
+            ...hotelBaseInput,
             sorter: sorterValue,
             filters: { text: "" },
             skip: input.skip + offset,
