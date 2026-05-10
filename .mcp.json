@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bookingcom-reviews": {
+      "command": "npm",
+      "args": ["start"],
+      "cwd": "/home/user/bookingcom-mcp"
+    }
+  }
+}
