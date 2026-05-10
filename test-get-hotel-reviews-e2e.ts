@@ -1,18 +1,6 @@
 import { getHotelReviews } from "./src/tools/get-reviews.js";
-import * as fs from "fs";
-
-const logFile = "/tmp/test-get-hotel-reviews-e2e.log";
-const writeLog = (msg: string) => {
-  const timestamp = new Date().toISOString();
-  const line = `${timestamp} ${msg}`;
-  console.error(line);
-  fs.appendFileSync(logFile, line + "\n");
-};
 
 async function testGetHotelReviewsE2E() {
-  writeLog("[TEST START]");
-  const startTime = Date.now();
-
   const hotels = [
     {
       name: "Felix",
@@ -26,21 +14,14 @@ async function testGetHotelReviewsE2E() {
 
   const results: { hotel: string; reviews: string; count: number }[] = [];
 
-  for (let hotelIdx = 0; hotelIdx < hotels.length; hotelIdx++) {
-    const hotel = hotels[hotelIdx];
+  for (const hotel of hotels) {
     try {
-      writeLog(`[HOTEL ${hotelIdx + 1}/${hotels.length}] Start: ${hotel.name}`);
-      const hotelStartTime = Date.now();
-
       console.error(`\n[TEST] Fetching 5 most recent reviews for ${hotel.name}...`);
       const reviewsText = await getHotelReviews({
         url: hotel.url,
         limit: 5,
         sortBy: "MOST_RECENT",
       });
-
-      const hotelElapsed = Date.now() - hotelStartTime;
-      writeLog(`[HOTEL ${hotelIdx + 1}/${hotels.length}] End: ${hotel.name} (${hotelElapsed}ms)`);
 
       const reviewCount = (reviewsText.match(/--- Review \d+ ---/g) || []).length;
 
@@ -62,11 +43,9 @@ async function testGetHotelReviewsE2E() {
   }
 
   // Verify results
-  writeLog("[VERIFY] Starting verification");
   console.error("\n[TEST] Verifying results...");
 
   if (results.length !== 2) {
-    writeLog("[VERIFY] ERROR: Did not get results for both hotels");
     console.error("✗ FAILED: Did not get results for both hotels");
     process.exit(1);
   }
@@ -75,14 +54,12 @@ async function testGetHotelReviewsE2E() {
 
   // Check both hotels have reviews
   if (hotel1.count === 0 || hotel2.count === 0) {
-    writeLog(`[VERIFY] ERROR: One or both hotels have no reviews (${hotel1.count}, ${hotel2.count})`);
     console.error(`✗ FAILED: One or both hotels have no reviews (${hotel1.count}, ${hotel2.count})`);
     process.exit(1);
   }
 
   // Check reviews are different
   if (hotel1.reviews === hotel2.reviews) {
-    writeLog("[VERIFY] ERROR: Reviews are identical (caching bug!)");
     console.error("✗ FAILED: Reviews are identical (caching bug!)");
     console.error("Hotel 1 reviews:", hotel1.reviews.substring(0, 200));
     console.error("Hotel 2 reviews:", hotel2.reviews.substring(0, 200));
@@ -101,15 +78,10 @@ async function testGetHotelReviewsE2E() {
   console.error(`  - ${hotel2.count} reviews`);
   console.error(`  - Reviewers: ${hotel2Names.slice(0, 3).join(", ")}...`);
 
-  const totalElapsed = Date.now() - startTime;
-  writeLog(`[TEST END] PASSED (total: ${totalElapsed}ms)`);
   console.error("\n✓ PASSED: Both hotels have different reviews");
 }
 
 testGetHotelReviewsE2E().catch((err) => {
-  writeLog(`[TEST FATAL] ${err}`);
   console.error("[TEST] Fatal error:", err);
   process.exit(1);
-}).finally(() => {
-  writeLog("[PROCESS] Closing");
 });
