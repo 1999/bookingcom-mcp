@@ -13,14 +13,18 @@ const GRAPHQL_URL = "https://www.booking.com/dml/graphql";
 const SESSION_CACHE_MAX = 64;
 
 const TIMEOUTS = {
-  navigate: 45_000,
+  navigate: 60_000,
   graphql: 20_000,
   click: 5_000,
-  page2Wait: 8_000,
-  settle: 1_500,
-  postClick: 1_000,
-  scrollSettle: 2_500,
+  page2Wait: 12_000,
+  settle: 2_000,
+  postClick: 1_500,
+  scrollSettle: 3_000,
 } as const;
+
+function randomDelay(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
 
 interface CapturedSession {
   headers: Record<string, string>;
@@ -110,6 +114,14 @@ export class BookingBrowser {
       ignoreHTTPSErrors: true,
       extraHTTPHeaders: {
         "Accept-Language": "en-GB,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Ch-Ua": "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": "\"macOS\"",
       },
     });
 
@@ -188,19 +200,20 @@ export class BookingBrowser {
 
       page
         .route("**/dml/graphql**", routeHandler)
-        .then(() => page.goto(hotelUrl, { waitUntil: "load", timeout: TIMEOUTS.navigate }))
+        .then(() => page.goto(hotelUrl, { waitUntil: "networkidle", timeout: TIMEOUTS.navigate }))
         .then(async () => {
-          await page.waitForTimeout(TIMEOUTS.settle);
+          await page.waitForTimeout(TIMEOUTS.settle + randomDelay(500, 1500));
 
           // Step 1: click the "Guest reviews" tab
           try {
             const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
             await reviewTab.scrollIntoViewIfNeeded({ timeout: TIMEOUTS.click });
+            await page.waitForTimeout(randomDelay(300, 800));
             await reviewTab.click({ timeout: TIMEOUTS.click });
-            await page.waitForTimeout(TIMEOUTS.postClick);
+            await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
           } catch {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
-            await page.waitForTimeout(TIMEOUTS.postClick);
+            await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
           }
 
           // Step 2: click page 2 pagination — this triggers the ReviewList GraphQL request
@@ -210,21 +223,23 @@ export class BookingBrowser {
               .filter({ hasText: /^2$/ })
               .first();
             await page2Btn.waitFor({ timeout: TIMEOUTS.page2Wait });
+            await page.waitForTimeout(randomDelay(400, 1000));
             await page2Btn.scrollIntoViewIfNeeded();
+            await page.waitForTimeout(randomDelay(300, 800));
             await page2Btn.click({ timeout: TIMEOUTS.click });
-            await page.waitForTimeout(TIMEOUTS.settle);
+            await page.waitForTimeout(TIMEOUTS.settle + randomDelay(500, 1500));
           } catch {
             // fallback: "Read all reviews" button
             try {
               await page.locator("button").filter({ hasText: /Read all reviews/i }).first().click({ timeout: TIMEOUTS.click });
-              await page.waitForTimeout(TIMEOUTS.settle);
+              await page.waitForTimeout(TIMEOUTS.settle + randomDelay(500, 1500));
             } catch { /* ignore */ }
           }
 
           // Last resort: scroll to bottom
           if (!resolved) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(TIMEOUTS.scrollSettle);
+            await page.waitForTimeout(TIMEOUTS.scrollSettle + randomDelay(500, 1500));
           }
 
           if (!resolved) {
