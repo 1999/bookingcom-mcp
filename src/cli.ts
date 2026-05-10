@@ -3,7 +3,7 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { getHotelReviewsJSON } from "./tools/get-reviews.js";
-import { summarizeHotel } from "./tools/summarize-hotel.js";
+import { summarizeHotelJSON } from "./tools/summarize-hotel.js";
 import { bookingBrowser } from "./browser.js";
 
 async function main() {
@@ -27,11 +27,11 @@ async function main() {
           }),
       async (args) => {
         try {
-          const result = await summarizeHotel({
+          const result = await summarizeHotelJSON({
             url: args.url,
             withinMonths: args["within-months"],
           });
-          console.log(result);
+          console.log(JSON.stringify(result, null, 2));
           process.exit(0);
         } catch (err) {
           console.error(

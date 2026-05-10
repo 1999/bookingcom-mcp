@@ -311,3 +311,135 @@ export async function summarizeHotel(rawInput: unknown): Promise<string> {
 
   return lines.join("\n");
 }
+
+export async function summarizeHotelJSON(rawInput: unknown) {
+  const input = SummarizeHotelSchema.parse(rawInput);
+
+  const url = new URL(input.url);
+  const cleanUrl = `${url.origin}${url.pathname}`;
+
+  const session = await bookingBrowser.ensureSession(cleanUrl);
+  const hotelBaseInput = await bookingBrowser.getBaseInputForHotel(cleanUrl);
+  const baseInput = { ...session.baseInput, ...hotelBaseInput };
+
+  const mostRecentSorterValue = bookingBrowser.resolveSorter(session, "newest", "NEWEST_FIRST");
+
+  const firstPage = await bookingBrowser.callGraphQL(session, {
+    ...baseInput,
+    sorter: mostRecentSorterValue,
+    filters: { text: "" },
+    skip: 0,
+    limit: PAGE_SIZE,
+  });
+
+  const totalReviews = firstPage.reviewsCount;
+  const targetN = requiredSampleSize(totalReviews);
+  const cutoffTimestamp = Math.floor(Date.now() / 1000) - input.withinMonths * 30 * 24 * 3600;
+
+  const additionalReviews: ReviewCard[] = [];
+  let hitDateCutoff = false;
+
+  const filteredFirstPage: ReviewCard[] = [];
+  for (const r of firstPage.reviewCard) {
+    if (r.reviewedDate < cutoffTimestamp) { hitDateCutoff = true; break; }
+    filteredFirstPage.push(r);
+  }
+
+  if (!hitDateCutoff && filteredFirstPage.length === PAGE_SIZE && filteredFirstPage.length < targetN) {
+    const rest = await fetchRecentReviews(
+      session,
+      baseInput,
+      cutoffTimestamp,
+      targetN - filteredFirstPage.length,
+      PAGE_SIZE,
+    );
+    additionalReviews.push(...rest.reviews);
+    if (rest.hitDateCutoff) hitDateCutoff = true;
+  }
+
+  const allReviews = filteredFirstPage.concat(additionalReviews);
+  let minTs = Infinity;
+  let maxTs = -Infinity;
+  for (const r of allReviews) {
+    if (r.reviewedDate < minTs) minTs = r.reviewedDate;
+    if (r.reviewedDate > maxTs) maxTs = r.reviewedDate;
+  }
+  const newestDate = allReviews.length ? new Date(maxTs * 1000) : null;
+  const oldestDate = allReviews.length ? new Date(minTs * 1000) : null;
+
+  const scores = allReviews.map((r) => r.reviewScore);
+  const stats = computeStats(scores);
+  const trend = scoreTrend(scores);
+  const margin = achievedMargin(allReviews.length, totalReviews);
+
+  const scoreBuckets = { exceptional: 0, good: 0, fair: 0, poor: 0 };
+  for (const s of scores) {
+    if (s >= 9) scoreBuckets.exceptional++;
+    else if (s >= 7) scoreBuckets.good++;
+    else if (s >= 5) scoreBuckets.fair++;
+    else scoreBuckets.poor++;
+  }
+
+  return {
+    url: cleanUrl,
+    overall: {
+      score: baseInput.hotelScore,
+      totalReviews,
+    },
+    categoryScores: firstPage.ratingScores.map((s) => ({
+      name: s.translation,
+      score: s.value,
+    })),
+    scoreDistribution: firstPage.reviewScoreFilter.map((f) => ({
+      label: f.name,
+      score: Number(f.value),
+      count: f.count,
+      percentage: totalReviews > 0 ? (f.count / totalReviews) * 100 : 0,
+    })),
+    travellerTypes: firstPage.customerTypeFilter.map((f) => ({
+      type: f.name,
+      count: f.count,
+      percentage: firstPage.customerTypeFilter.reduce((a, b) => a + b.count, 0) > 0
+        ? (f.count / firstPage.customerTypeFilter.reduce((a, b) => a + b.count, 0)) * 100
+        : 0,
+    })),
+    topLanguages: firstPage.languageFilter
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .map((f) => ({
+        language: f.name,
+        count: f.count,
+        percentage: firstPage.languageFilter.reduce((a, b) => a + b.count, 0) > 0
+          ? (f.count / firstPage.languageFilter.reduce((a, b) => a + b.count, 0)) * 100
+          : 0,
+      })),
+    recentReviews: allReviews.length > 0 ? {
+      sampleSize: allReviews.length,
+      dateRange: {
+        oldest: oldestDate?.toISOString() ?? null,
+        newest: newestDate?.toISOString() ?? null,
+      },
+      withinMonths: input.withinMonths,
+      hitDateCutoff,
+      averageScore: {
+        value: stats.mean,
+        confidenceInterval: {
+          lower: stats.ci.lower,
+          upper: stats.ci.upper,
+        },
+        marginOfError: margin * 10,
+      },
+      trend: {
+        direction: trend.direction,
+        olderHalfMean: trend.olderMean,
+        newerHalfMean: trend.newerMean,
+      },
+      scoreBuckets: {
+        exceptional: { count: scoreBuckets.exceptional, percentage: allReviews.length > 0 ? (scoreBuckets.exceptional / allReviews.length) * 100 : 0 },
+        good: { count: scoreBuckets.good, percentage: allReviews.length > 0 ? (scoreBuckets.good / allReviews.length) * 100 : 0 },
+        fair: { count: scoreBuckets.fair, percentage: allReviews.length > 0 ? (scoreBuckets.fair / allReviews.length) * 100 : 0 },
+        poor: { count: scoreBuckets.poor, percentage: allReviews.length > 0 ? (scoreBuckets.poor / allReviews.length) * 100 : 0 },
+      },
+    } : null,
+  };
+}
