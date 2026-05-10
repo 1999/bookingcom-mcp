@@ -31,6 +31,8 @@ interface CapturedSession {
   capturedAt: number;
   /** Sorter values returned by the API — populated after first callGraphQL */
   sorters: Sorter[];
+  /** Hotel ID this session was captured from */
+  hotelId?: number;
 }
 
 interface GraphQLResponse {
@@ -61,6 +63,7 @@ export class BookingBrowser {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private globalSession: CapturedSession | null = null;
+  private globalSessionHotelId: number | null = null;
   private pendingSessions = new Map<string, Promise<CapturedSession>>();
   private baseInputCache = new Map<string, ReviewListFrontendInput>();
 
@@ -128,22 +131,42 @@ export class BookingBrowser {
   }
 
   async getSessionWithHotelInput(hotelUrl: string): Promise<CapturedSession> {
-    // Ensure we have a global session with CSRF headers
-    const globalSession = await this.ensureSession(hotelUrl);
+    const urlKey = this.getHotelId(hotelUrl);
 
-    // Check if we already have baseInput cached for this hotel
-    const hotelId = this.getHotelId(hotelUrl);
-    const cachedInput = this.baseInputCache.get(hotelId);
+    // Check if we already have baseInput cached for this URL
+    const cachedInput = this.baseInputCache.get(urlKey);
     if (cachedInput) {
-      console.error(`[bookingcom-mcp] Using cached baseInput for hotel ${hotelId}`);
-      return { ...globalSession, baseInput: cachedInput };
+      await this.ensureSession(hotelUrl); // ensure CSRF is available
+      console.error(`[bookingcom-mcp] Reusing cached baseInput for ${urlKey} (hotel ID ${cachedInput.hotelId})`);
+      return { ...this.globalSession!, baseInput: cachedInput };
     }
 
-    // For a different hotel, navigate and capture its baseInput without full UI interaction
-    const hotelInput = await this.captureBaseInputOnly(hotelUrl);
-    this.baseInputCache.set(hotelId, hotelInput);
+    // First call or cache miss - need to capture baseInput
+    let globalSession = this.globalSession;
+    if (!this.isGlobalSessionValid()) {
+      globalSession = await this.ensureSession(hotelUrl);
+    }
 
-    return { ...globalSession, baseInput: hotelInput };
+    // If we don't have a global session yet, this will be the first capture
+    if (!globalSession) {
+      const firstCapture = await this.ensureSession(hotelUrl);
+      this.baseInputCache.set(urlKey, firstCapture.baseInput);
+      console.error(`[bookingcom-mcp] First hotel captured: ${urlKey} (hotel ID ${firstCapture.baseInput.hotelId})`);
+      return firstCapture;
+    }
+
+    // We have a valid global session with CSRF, but need to capture baseInput for this new hotel
+    if (this.globalSessionHotelId !== null && this.globalSessionHotelId !== globalSession.baseInput.hotelId) {
+      console.error(`[bookingcom-mcp] Global session from hotel ${this.globalSessionHotelId}, capturing new hotel ${urlKey}`);
+      const newInput = await this.captureBaseInputOnly(hotelUrl);
+      this.baseInputCache.set(urlKey, newInput);
+      return { ...globalSession, baseInput: newInput };
+    }
+
+    // Session is from same hotel or first time
+    this.baseInputCache.set(urlKey, globalSession.baseInput);
+    console.error(`[bookingcom-mcp] Using global session baseInput for ${urlKey} (hotel ID ${globalSession.baseInput.hotelId})`);
+    return globalSession;
   }
 
   private async captureBaseInputOnly(hotelUrl: string): Promise<ReviewListFrontendInput> {
@@ -281,10 +304,12 @@ export class BookingBrowser {
           queryVariableNames: parseVariableNames(body.query),
           capturedAt: Date.now(),
           sorters: [],
+          hotelId: body.variables.input.hotelId,
         };
 
         this.globalSession = captured;
-        console.error("[bookingcom-mcp] Global session captured successfully");
+        this.globalSessionHotelId = captured.baseInput.hotelId;
+        console.error(`[bookingcom-mcp] Global session captured for hotel ID ${captured.baseInput.hotelId}`);
 
         await route.continue();
         if (!resolved) {
