@@ -1,5 +1,4 @@
-import { chromium } from "playwright-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { chromium } from "playwright";
 import type { Browser, BrowserContext, Page, Route } from "playwright";
 import type {
   FilterItem,
@@ -8,8 +7,6 @@ import type {
   ReviewListFullResult,
   Sorter,
 } from "./queries.js";
-
-chromium.use(StealthPlugin());
 
 const SESSION_TTL_MS = 20 * 60 * 60 * 1000; // 20 hours
 const GRAPHQL_URL = "https://www.booking.com/dml/graphql";
@@ -94,15 +91,26 @@ export class BookingBrowser {
 
     this.browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled", "--ignore-certificate-errors"],
+      args: [
+        "--no-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--ignore-certificate-errors",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+      ],
     }) as unknown as Browser;
 
     this.context = await this.browser.newContext({
       userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       viewport: { width: 1280, height: 800 },
       locale: "en-GB",
       ignoreHTTPSErrors: true,
+      extraHTTPHeaders: {
+        "Accept-Language": "en-GB,en;q=0.9",
+      },
     });
 
     this.page = await this.context.newPage();
