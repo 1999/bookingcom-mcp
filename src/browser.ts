@@ -60,16 +60,12 @@ export class BookingBrowser {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
-  private sessionCache = new Map<string, CapturedSession>();
+  private globalSession: CapturedSession | null = null;
   private pendingSessions = new Map<string, Promise<CapturedSession>>();
 
-  private getHotelId(hotelUrl: string): string {
-    const match = hotelUrl.match(/\/hotel\/([^/?]+)/);
-    return match ? match[1] : hotelUrl;
-  }
-
-  private isSessionValid(session: CapturedSession): boolean {
-    return Date.now() - session.capturedAt < SESSION_TTL_MS;
+  private isGlobalSessionValid(): boolean {
+    if (!this.globalSession) return false;
+    return Date.now() - this.globalSession.capturedAt < SESSION_TTL_MS;
   }
 
   private async launch(): Promise<void> {
@@ -104,30 +100,24 @@ export class BookingBrowser {
   }
 
   async ensureSession(hotelUrl: string): Promise<CapturedSession> {
-    const hotelId = this.getHotelId(hotelUrl);
-    const cached = this.sessionCache.get(hotelId);
-
-    if (cached && this.isSessionValid(cached)) {
-      const ageMs = Date.now() - cached.capturedAt;
+    if (this.isGlobalSessionValid()) {
+      const ageMs = Date.now() - this.globalSession!.capturedAt;
       const ageMin = Math.round(ageMs / 60000);
-      console.error(`[bookingcom-mcp] Reusing session for hotel ${hotelId} (${ageMin}m old) — no Playwright launch needed`);
-      return cached;
+      console.error(`[bookingcom-mcp] Reusing global session (${ageMin}m old) — no Playwright launch needed`);
+      return this.globalSession!;
     }
 
-    const inFlight = this.pendingSessions.get(hotelId);
+    const inFlight = this.pendingSessions.get("__global__");
     if (inFlight) {
-      console.error(`[bookingcom-mcp] Session capture in progress for hotel ${hotelId}, waiting...`);
+      console.error("[bookingcom-mcp] Session capture in progress, waiting...");
       return inFlight;
     }
 
-    console.error(`[bookingcom-mcp] No valid session found for hotel ${hotelId}, capturing new one...`);
-    const promise = this.captureSession(hotelUrl).then((session) => {
-      this.sessionCache.set(hotelId, session);
-      return session;
-    }).finally(() => {
-      this.pendingSessions.delete(hotelId);
+    console.error("[bookingcom-mcp] No valid session found, capturing new one...");
+    const promise = this.captureSession(hotelUrl).finally(() => {
+      this.pendingSessions.delete("__global__");
     });
-    this.pendingSessions.set(hotelId, promise);
+    this.pendingSessions.set("__global__", promise);
     return promise;
   }
 
@@ -178,7 +168,8 @@ export class BookingBrowser {
           sorters: [],
         };
 
-        console.error("[bookingcom-mcp] Session captured successfully");
+        this.globalSession = captured;
+        console.error("[bookingcom-mcp] Global session captured successfully");
 
         await route.continue();
         if (!resolved) {
