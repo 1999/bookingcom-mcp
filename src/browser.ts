@@ -207,49 +207,64 @@ export class BookingBrowser {
 
       page
         .route("**/dml/graphql**", routeHandler)
-        .then(() => page.goto(hotelUrl, { waitUntil: "networkidle", timeout: TIMEOUTS.navigate }))
+        .then(() => {
+          process.stderr.write(`[booking] Navigating to ${hotelUrl}\n`);
+          return page.goto(hotelUrl, { waitUntil: "networkidle", timeout: TIMEOUTS.navigate });
+        })
         .then(async () => {
+          process.stderr.write(`[booking] Page loaded, settling...\n`);
           await page.waitForTimeout(TIMEOUTS.settle + randomDelay(500, 1500));
 
           // Step 1: click the "Guest reviews" tab
           try {
+            process.stderr.write(`[booking] Looking for Guest reviews tab...\n`);
             const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
             await reviewTab.scrollIntoViewIfNeeded({ timeout: TIMEOUTS.click });
             await page.waitForTimeout(randomDelay(300, 800));
             await reviewTab.click({ timeout: TIMEOUTS.click });
+            process.stderr.write(`[booking] Clicked Guest reviews tab\n`);
             await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
-          } catch {
+          } catch (e) {
+            process.stderr.write(`[booking] Guest reviews tab not found, scrolling instead\n`);
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
             await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
           }
 
           // Step 2: click page 2 pagination — this triggers the ReviewList GraphQL request
           try {
+            process.stderr.write(`[booking] Looking for page 2 button...\n`);
             const page2Btn = page
               .locator('button[aria-label=" 2"], button')
               .filter({ hasText: /^2$/ })
               .first();
             await page2Btn.waitFor({ timeout: TIMEOUTS.page2Wait });
+            process.stderr.write(`[booking] Found page 2 button\n`);
             await page.waitForTimeout(randomDelay(400, 1000));
             await page2Btn.scrollIntoViewIfNeeded();
             await page.waitForTimeout(randomDelay(300, 800));
             await page2Btn.click({ timeout: TIMEOUTS.click });
+            process.stderr.write(`[booking] Clicked page 2 button\n`);
             await page.waitForTimeout(TIMEOUTS.settle + randomDelay(500, 1500));
-          } catch {
-            // fallback: "Read all reviews" button
+          } catch (e) {
+            process.stderr.write(`[booking] Page 2 not found, trying Read all reviews...\n`);
             try {
               await page.locator("button").filter({ hasText: /Read all reviews/i }).first().click({ timeout: TIMEOUTS.click });
+              process.stderr.write(`[booking] Clicked Read all reviews\n`);
               await page.waitForTimeout(TIMEOUTS.settle + randomDelay(500, 1500));
-            } catch { /* ignore */ }
+            } catch {
+              process.stderr.write(`[booking] Read all reviews not found either\n`);
+            }
           }
 
           // Last resort: scroll to bottom
           if (!resolved) {
+            process.stderr.write(`[booking] Last resort: scrolling to bottom\n`);
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
             await page.waitForTimeout(TIMEOUTS.scrollSettle + randomDelay(500, 1500));
           }
 
           if (!resolved) {
+            process.stderr.write(`[booking] FAILED: GraphQL request not captured\n`);
             settle(() => reject(new Error(
               "ReviewList GraphQL request was not captured. Booking.com's bot detection may have blocked the headless browser. Try again."
             )));
