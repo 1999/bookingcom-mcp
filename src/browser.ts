@@ -126,6 +126,13 @@ export class BookingBrowser {
     });
 
     this.page = await this.context.newPage();
+
+    await this.page.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+      Object.defineProperty(navigator, "plugins", { get: () => [] });
+      Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+      (window as any).chrome = { runtime: {} };
+    });
   }
 
   async ensureSession(hotelUrl: string): Promise<CapturedSession> {
