@@ -11,7 +11,7 @@ export const GetHotelReviewsSchema = z.object({
     }),
   limit: z.number().int().min(1).max(1000).default(10),
   skip: z.number().int().min(0).default(0),
-  sortBy: z.enum(["MOST_RELEVANT", "MOST_RECENT"]).default("MOST_RELEVANT"),
+  sortBy: z.enum(["MOST_RECENT"]).default("MOST_RECENT"),
 });
 
 export type GetHotelReviewsInput = z.infer<typeof GetHotelReviewsSchema>;
@@ -57,9 +57,7 @@ export async function getHotelReviews(
   const session = await bookingBrowser.ensureSession(cleanUrl);
   const hotelBaseInput = await bookingBrowser.getBaseInputForHotel(cleanUrl);
 
-  const sorterLabel = input.sortBy === "MOST_RECENT" ? "newest" : "relevant";
-  const sorterFallback = input.sortBy === "MOST_RECENT" ? "NEWEST_FIRST" : "MOST_RELEVANT";
-  const sorterValue = bookingBrowser.resolveSorter(session, sorterLabel, sorterFallback);
+  const sorterValue = bookingBrowser.resolveSorter(session, "newest", "NEWEST_FIRST");
 
   // First fetch reveals reviewsCount so we can plan all remaining pages upfront
   const firstResult = await bookingBrowser.callGraphQL(session, {

@@ -13,7 +13,7 @@ Fetches individual guest reviews for a hotel.
 | `url` | string | required | Full Booking.com hotel URL |
 | `limit` | integer 1–50 | `10` | Number of reviews to return |
 | `skip` | integer ≥0 | `0` | Reviews to skip (for pagination) |
-| `sortBy` | `MOST_RELEVANT` \| `MOST_RECENT` | `MOST_RELEVANT` | Sort order |
+| `sortBy` | `MOST_RECENT` | `MOST_RECENT` | Sort order |
 
 Returns each review's score, date, guest type, room info, positive/negative text, and hotel reply.
 
