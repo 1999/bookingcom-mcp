@@ -61,8 +61,8 @@ export class BookingBrowser {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private globalSession: CapturedSession | null = null;
-  private globalSessionUrl: string | null = null;
   private pendingSessions = new Map<string, Promise<CapturedSession>>();
+  private baseInputCache = new Map<number, ReviewListFrontendInput>();
 
   private isGlobalSessionValid(): boolean {
     if (!this.globalSession) return false;
@@ -102,14 +102,10 @@ export class BookingBrowser {
   }
 
   async ensureSession(hotelUrl: string): Promise<CapturedSession> {
-    const normalizedUrl = new URL(hotelUrl);
-    const cleanUrl = `${normalizedUrl.origin}${normalizedUrl.pathname}`;
-
-    // Check if we have a valid session from THIS specific hotel
-    if (this.isGlobalSessionValid() && this.globalSessionUrl === cleanUrl) {
+    if (this.isGlobalSessionValid()) {
       const ageMs = Date.now() - this.globalSession!.capturedAt;
       const ageMin = Math.round(ageMs / 60000);
-      console.error(`[bookingcom-mcp] Reusing session for ${cleanUrl} (${ageMin}m old)`);
+      console.error(`[bookingcom-mcp] Reusing global CSRF session (${ageMin}m old) — no Playwright launch needed`);
       return this.globalSession!;
     }
 
@@ -119,15 +115,82 @@ export class BookingBrowser {
       return inFlight;
     }
 
-    console.error(`[bookingcom-mcp] Capturing session for ${cleanUrl}...`);
-    const promise = this.captureSession(hotelUrl).then((session) => {
-      this.globalSessionUrl = cleanUrl;
-      return session;
-    }).finally(() => {
+    console.error("[bookingcom-mcp] No valid session found, capturing global CSRF...");
+    const promise = this.captureSession(hotelUrl).finally(() => {
       this.pendingSessions.delete("__global__");
     });
     this.pendingSessions.set("__global__", promise);
     return promise;
+  }
+
+  async getBaseInputForHotel(hotelUrl: string): Promise<ReviewListFrontendInput> {
+    // Ensure we have global CSRF first
+    const csrfSession = await this.ensureSession(hotelUrl);
+
+    // Navigate to this hotel and capture its baseInput
+    await this.launch();
+    const page = this.page!;
+
+    return new Promise<ReviewListFrontendInput>((resolve, reject) => {
+      let resolved = false;
+
+      const routeHandler = async (route: Route) => {
+        const request = route.request();
+        if (request.method() !== "POST") { await route.continue(); return; }
+
+        const bodyText = request.postData() ?? "";
+        let body: { operationName?: string; variables?: { input?: ReviewListFrontendInput } };
+        try { body = JSON.parse(bodyText); }
+        catch { await route.continue(); return; }
+
+        if (body.operationName !== "ReviewList" || !body.variables?.input) {
+          await route.continue(); return;
+        }
+
+        const input = body.variables.input;
+
+        // Check cache first
+        if (this.baseInputCache.has(input.hotelId)) {
+          console.error(`[bookingcom-mcp] Using cached baseInput for hotel ${input.hotelId}`);
+          await route.continue();
+          if (!resolved) {
+            resolved = true;
+            page.unroute("**/dml/graphql**");
+            resolve(this.baseInputCache.get(input.hotelId)!);
+          }
+          return;
+        }
+
+        console.error(`[bookingcom-mcp] Captured baseInput for hotel ${input.hotelId}`);
+        this.baseInputCache.set(input.hotelId, input);
+
+        await route.continue();
+        if (!resolved) {
+          resolved = true;
+          page.unroute("**/dml/graphql**");
+          resolve(input);
+        }
+      };
+
+      page
+        .route("**/dml/graphql**", routeHandler)
+        .then(() => page.goto(hotelUrl, { waitUntil: "load", timeout: TIMEOUTS.navigate }))
+        .then(async () => {
+          await page.waitForTimeout(TIMEOUTS.settle);
+          if (!resolved) {
+            try {
+              const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
+              await reviewTab.scrollIntoViewIfNeeded({ timeout: TIMEOUTS.click });
+              await reviewTab.click({ timeout: TIMEOUTS.click });
+              await page.waitForTimeout(TIMEOUTS.postClick);
+            } catch { /* ignore */ }
+          }
+          if (!resolved) {
+            reject(new Error("Could not capture baseInput for hotel"));
+          }
+        })
+        .catch(reject);
+    });
   }
 
 private async captureSession(hotelUrl: string): Promise<CapturedSession> {
