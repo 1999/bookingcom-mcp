@@ -67,9 +67,9 @@ server.tool(
       .default(0)
       .describe("Reviews to skip for pagination (default 0)"),
     sortBy: z
-      .enum(["MOST_RELEVANT", "MOST_RECENT"])
-      .default("MOST_RELEVANT")
-      .describe("Sort order: MOST_RELEVANT or MOST_RECENT"),
+      .enum(["MOST_RECENT"])
+      .default("MOST_RECENT")
+      .describe("Sort order: MOST_RECENT"),
   },
   async (input, extra) => {
     try {

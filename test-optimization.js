@@ -16,7 +16,7 @@ async function test() {
     const hotel = hotels[i];
     console.log(`\n=== Hotel ${i + 1}: ${hotel} ===`);
     try {
-      const result = await getHotelReviews({ url: hotel, limit: 3, skip: 0, sortBy: "MOST_RELEVANT" });
+      const result = await getHotelReviews({ url: hotel, limit: 3, skip: 0 });
       const lines = result.split("\n");
       console.log(`Result: ${lines[0]}`);
       console.log(`(${lines.length} lines returned)`);
