@@ -39,6 +39,8 @@ npx playwright install chromium
 
 ## Running
 
+### MCP Server
+
 ```bash
 # Production / used by an MCP client
 npm start
@@ -46,6 +48,32 @@ npm start
 # Development — auto-restarts on source changes
 npm run dev
 ```
+
+### CLI
+
+The repository includes a `bcr` CLI tool for direct access to the hotel review tools:
+
+```bash
+# Get hotel reviews
+npm run cli -- get_hotel_reviews --url "https://www.booking.com/hotel/..." --limit 20 --sort-by MOST_RECENT
+
+# Summarize a hotel
+npm run cli -- summarize_hotel --url "https://www.booking.com/hotel/..." --within-months 6
+```
+
+**CLI options:**
+
+`get_hotel_reviews`:
+- `--url, -u` (required): Full Booking.com hotel URL
+- `--limit, -l` (default: 10): Number of reviews (1–1000)
+- `--skip, -s` (default: 0): Pagination offset
+- `--sort-by, -b` (default: MOST_RELEVANT): Sort order (MOST_RELEVANT or MOST_RECENT)
+
+`summarize_hotel`:
+- `--url, -u` (required): Full Booking.com hotel URL
+- `--within-months, -m` (default: 12): Include reviews from last N months
+
+Use `npm run cli -- --help` or `npm run cli -- <command> --help` for more details.
 
 ## Claude Desktop integration
 
