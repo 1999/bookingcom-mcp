@@ -71,6 +71,7 @@ export class BookingBrowser {
   private async launch(): Promise<void> {
     if (this.browser) return;
 
+    console.error("[bookingcom-mcp] Launching Playwright browser...");
     this.browser = await chromium.launch({
       headless: true,
       args: [
@@ -99,11 +100,20 @@ export class BookingBrowser {
   }
 
   async ensureSession(hotelUrl: string): Promise<CapturedSession> {
-    if (this.isGlobalSessionValid()) return this.globalSession!;
+    if (this.isGlobalSessionValid()) {
+      const ageMs = Date.now() - this.globalSession!.capturedAt;
+      const ageMin = Math.round(ageMs / 60000);
+      console.error(`[bookingcom-mcp] Reusing global session (${ageMin}m old) — no Playwright launch needed`);
+      return this.globalSession!;
+    }
 
     const inFlight = this.pendingSessions.get("__global__");
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      console.error("[bookingcom-mcp] Session capture in progress, waiting...");
+      return inFlight;
+    }
 
+    console.error("[bookingcom-mcp] No valid session found, capturing new one...");
     const promise = this.captureSession(hotelUrl).finally(() => {
       this.pendingSessions.delete("__global__");
     });
@@ -159,6 +169,7 @@ export class BookingBrowser {
         };
 
         this.globalSession = captured;
+        console.error("[bookingcom-mcp] Global session captured successfully");
 
         await route.continue();
         if (!resolved) {
