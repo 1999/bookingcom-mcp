@@ -62,10 +62,16 @@ export class BookingBrowser {
   private page: Page | null = null;
   private globalSession: CapturedSession | null = null;
   private pendingSessions = new Map<string, Promise<CapturedSession>>();
+  private baseInputCache = new Map<string, ReviewListFrontendInput>();
 
   private isGlobalSessionValid(): boolean {
     if (!this.globalSession) return false;
     return Date.now() - this.globalSession.capturedAt < SESSION_TTL_MS;
+  }
+
+  private getHotelId(hotelUrl: string): string {
+    const match = hotelUrl.match(/\/hotel\/([^/?]+)/);
+    return match ? match[1] : hotelUrl;
   }
 
   private async launch(): Promise<void> {
@@ -119,6 +125,115 @@ export class BookingBrowser {
     });
     this.pendingSessions.set("__global__", promise);
     return promise;
+  }
+
+  async getSessionWithHotelInput(hotelUrl: string): Promise<CapturedSession> {
+    // Ensure we have a global session with CSRF headers
+    const globalSession = await this.ensureSession(hotelUrl);
+
+    // Check if we already have baseInput cached for this hotel
+    const hotelId = this.getHotelId(hotelUrl);
+    const cachedInput = this.baseInputCache.get(hotelId);
+    if (cachedInput) {
+      console.error(`[bookingcom-mcp] Using cached baseInput for hotel ${hotelId}`);
+      return { ...globalSession, baseInput: cachedInput };
+    }
+
+    // For a different hotel, navigate and capture its baseInput without full UI interaction
+    const hotelInput = await this.captureBaseInputOnly(hotelUrl);
+    this.baseInputCache.set(hotelId, hotelInput);
+
+    return { ...globalSession, baseInput: hotelInput };
+  }
+
+  private async captureBaseInputOnly(hotelUrl: string): Promise<ReviewListFrontendInput> {
+    await this.launch();
+    const page = this.page!;
+
+    return new Promise<ReviewListFrontendInput>((resolve, reject) => {
+      let resolved = false;
+      let settled = false;
+
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        page.unroute("**/dml/graphql**").catch(() => {});
+      };
+
+      const routeHandler = async (route: Route) => {
+        const request = route.request();
+        if (request.method() !== "POST") { await route.continue(); return; }
+
+        const bodyText = request.postData() ?? "";
+        let body: {
+          operationName?: string;
+          variables?: { input?: ReviewListFrontendInput };
+        };
+        try { body = JSON.parse(bodyText); }
+        catch { await route.continue(); return; }
+
+        if (body.operationName !== "ReviewList" || !body.variables?.input) {
+          await route.continue(); return;
+        }
+
+        const input = body.variables.input;
+        console.error(`[bookingcom-mcp] Captured baseInput for hotel ${input.hotelId}`);
+
+        await route.continue();
+        if (!resolved) {
+          resolved = true;
+          settle();
+          resolve(input);
+        }
+      };
+
+      page
+        .route("**/dml/graphql**", routeHandler)
+        .then(() => page.goto(hotelUrl, { waitUntil: "load", timeout: TIMEOUTS.navigate }))
+        .then(async () => {
+          await page.waitForTimeout(TIMEOUTS.settle);
+
+          // Try to trigger GraphQL request via UI interactions
+          try {
+            const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
+            await reviewTab.scrollIntoViewIfNeeded({ timeout: TIMEOUTS.click });
+            await reviewTab.click({ timeout: TIMEOUTS.click });
+            await page.waitForTimeout(TIMEOUTS.postClick);
+          } catch {
+            try {
+              await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+              await page.waitForTimeout(TIMEOUTS.postClick);
+            } catch { /* ignore */ }
+          }
+
+          try {
+            const page2Btn = page
+              .locator('button[aria-label=" 2"], button')
+              .filter({ hasText: /^2$/ })
+              .first();
+            await page2Btn.waitFor({ timeout: TIMEOUTS.page2Wait });
+            await page2Btn.scrollIntoViewIfNeeded();
+            await page2Btn.click({ timeout: TIMEOUTS.click });
+            await page.waitForTimeout(TIMEOUTS.settle);
+          } catch {
+            try {
+              await page.locator("button").filter({ hasText: /Read all reviews/i }).first().click({ timeout: TIMEOUTS.click });
+              await page.waitForTimeout(TIMEOUTS.settle);
+            } catch { /* ignore */ }
+          }
+
+          if (!resolved) {
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(TIMEOUTS.scrollSettle);
+          }
+
+          if (!resolved) {
+            settle();
+            reject(new Error("Could not capture baseInput for hotel"));
+          }
+        })
+        .catch((err) => { settle(); reject(err); });
+    });
   }
 
   private async captureSession(hotelUrl: string): Promise<CapturedSession> {

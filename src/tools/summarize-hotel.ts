@@ -219,8 +219,8 @@ export async function summarizeHotel(rawInput: unknown): Promise<string> {
   const url = new URL(input.url);
   const cleanUrl = `${url.origin}${url.pathname}`;
 
-  // Bootstrap session (navigate to page, capture CSRF + hotel metadata)
-  const session = await bookingBrowser.ensureSession(cleanUrl);
+  // Bootstrap session - reuse global CSRF but get hotel-specific baseInput
+  const session = await bookingBrowser.getSessionWithHotelInput(cleanUrl);
   const baseInput = session.baseInput;
 
   const mostRecentSorterValue = bookingBrowser.resolveSorter(session, "newest", "NEWEST_FIRST");
