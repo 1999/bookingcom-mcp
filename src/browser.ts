@@ -201,25 +201,39 @@ export class BookingBrowser {
         .route("**/dml/graphql**", routeHandler)
         .then(() => {
           process.stderr.write(`[booking] Navigating to ${hotelUrl}\n`);
-          return page.goto(hotelUrl, { waitUntil: "networkidle", timeout: TIMEOUTS.navigate });
+          return page.goto(hotelUrl, { waitUntil: "domcontentloaded", timeout: TIMEOUTS.navigate });
         })
         .then(async () => {
           process.stderr.write(`[booking] Page loaded, settling...\n`);
           await page.waitForTimeout(TIMEOUTS.settle + randomDelay(500, 1500));
 
-          // Step 1: click the "Guest reviews" tab
+          // Step 1: click the reviews tab in header navigation
           try {
-            process.stderr.write(`[booking] Looking for Guest reviews tab...\n`);
-            const reviewTab = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
-            await reviewTab.scrollIntoViewIfNeeded({ timeout: TIMEOUTS.click });
-            await page.waitForTimeout(randomDelay(300, 800));
-            await reviewTab.click({ timeout: TIMEOUTS.click });
-            process.stderr.write(`[booking] Clicked Guest reviews tab\n`);
-            await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
+            process.stderr.write(`[booking] Looking for reviews tab...\n`);
+            const reviewTab = page.locator("#reviews-tab-trigger").first();
+            const visible = await reviewTab.isVisible({ timeout: TIMEOUTS.click }).catch(() => false);
+            if (visible) {
+              await page.waitForTimeout(randomDelay(300, 800));
+              await reviewTab.click({ timeout: TIMEOUTS.click });
+              process.stderr.write(`[booking] Clicked reviews tab\n`);
+              await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
+            } else {
+              throw new Error("Reviews tab not visible");
+            }
           } catch (e) {
-            process.stderr.write(`[booking] Guest reviews tab not found, scrolling instead\n`);
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
-            await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
+            process.stderr.write(`[booking] Reviews tab (#reviews-tab-trigger) not found, trying Guest reviews link...\n`);
+            try {
+              const guestReviewLink = page.locator("a").filter({ hasText: /Guest reviews/i }).first();
+              await guestReviewLink.scrollIntoViewIfNeeded({ timeout: TIMEOUTS.click });
+              await page.waitForTimeout(randomDelay(300, 800));
+              await guestReviewLink.click({ timeout: TIMEOUTS.click });
+              process.stderr.write(`[booking] Clicked Guest reviews link\n`);
+              await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
+            } catch (e2) {
+              process.stderr.write(`[booking] Both review tabs failed, scrolling instead\n`);
+              await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+              await page.waitForTimeout(TIMEOUTS.postClick + randomDelay(200, 600));
+            }
           }
 
           // Step 2: click page 2 pagination — this triggers the ReviewList GraphQL request
