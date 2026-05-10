@@ -66,7 +66,9 @@ Replace `/absolute/path/to/bookingcom-mcp` with the directory where you cloned t
 
 ## How it works
 
-**Session capture** — on first use, a headless Chromium instance (with stealth plugin to avoid bot detection) navigates to the hotel page and intercepts the first `ReviewList` GraphQL request. The captured headers, CSRF token, and query template are cached for 20 hours. Subsequent calls reuse the cached session without relaunching the browser.
+**Session capture** — on first use, a headless Chromium instance (with stealth plugin to avoid bot detection) navigates to a hotel page and intercepts the first `ReviewList` GraphQL request. The captured headers, CSRF token, and query template are stored globally and reused for all hotels for 20 hours.
+
+**Global session reuse** — instead of launching a new browser for each hotel, all subsequent requests (regardless of hotel) reuse the captured session. This eliminates expensive Playwright overhead and reduces latency.
 
 **GraphQL execution** — review requests are made from within the browser context so Booking.com's session cookies are automatically included.
 

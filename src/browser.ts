@@ -10,7 +10,6 @@ import type {
 
 const SESSION_TTL_MS = 20 * 60 * 60 * 1000; // 20 hours
 const GRAPHQL_URL = "https://www.booking.com/dml/graphql";
-const SESSION_CACHE_MAX = 64;
 
 const TIMEOUTS = {
   navigate: 45_000,
@@ -61,34 +60,18 @@ export class BookingBrowser {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
-  private sessionCache = new Map<string, CapturedSession>();
+  private globalSession: CapturedSession | null = null;
   private pendingSessions = new Map<string, Promise<CapturedSession>>();
 
-  private cacheGet(hotelUrl: string): CapturedSession | undefined {
-    const cached = this.sessionCache.get(hotelUrl);
-    if (!cached) return undefined;
-    if (Date.now() - cached.capturedAt >= SESSION_TTL_MS) {
-      this.sessionCache.delete(hotelUrl);
-      return undefined;
-    }
-    // Refresh LRU recency.
-    this.sessionCache.delete(hotelUrl);
-    this.sessionCache.set(hotelUrl, cached);
-    return cached;
-  }
-
-  private cacheSet(hotelUrl: string, session: CapturedSession): void {
-    this.sessionCache.set(hotelUrl, session);
-    while (this.sessionCache.size > SESSION_CACHE_MAX) {
-      const oldest = this.sessionCache.keys().next().value;
-      if (oldest === undefined) break;
-      this.sessionCache.delete(oldest);
-    }
+  private isGlobalSessionValid(): boolean {
+    if (!this.globalSession) return false;
+    return Date.now() - this.globalSession.capturedAt < SESSION_TTL_MS;
   }
 
   private async launch(): Promise<void> {
     if (this.browser) return;
 
+    console.error("[bookingcom-mcp] Launching Playwright browser...");
     this.browser = await chromium.launch({
       headless: true,
       args: [
@@ -117,16 +100,24 @@ export class BookingBrowser {
   }
 
   async ensureSession(hotelUrl: string): Promise<CapturedSession> {
-    const cached = this.cacheGet(hotelUrl);
-    if (cached) return cached;
+    if (this.isGlobalSessionValid()) {
+      const ageMs = Date.now() - this.globalSession!.capturedAt;
+      const ageMin = Math.round(ageMs / 60000);
+      console.error(`[bookingcom-mcp] Reusing global session (${ageMin}m old) — no Playwright launch needed`);
+      return this.globalSession!;
+    }
 
-    const inFlight = this.pendingSessions.get(hotelUrl);
-    if (inFlight) return inFlight;
+    const inFlight = this.pendingSessions.get("__global__");
+    if (inFlight) {
+      console.error("[bookingcom-mcp] Session capture in progress, waiting...");
+      return inFlight;
+    }
 
+    console.error("[bookingcom-mcp] No valid session found, capturing new one...");
     const promise = this.captureSession(hotelUrl).finally(() => {
-      this.pendingSessions.delete(hotelUrl);
+      this.pendingSessions.delete("__global__");
     });
-    this.pendingSessions.set(hotelUrl, promise);
+    this.pendingSessions.set("__global__", promise);
     return promise;
   }
 
@@ -177,7 +168,8 @@ export class BookingBrowser {
           sorters: [],
         };
 
-        this.cacheSet(hotelUrl, captured);
+        this.globalSession = captured;
+        console.error("[bookingcom-mcp] Global session captured successfully");
 
         await route.continue();
         if (!resolved) {
