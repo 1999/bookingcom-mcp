@@ -2,7 +2,7 @@
 
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { getHotelReviews } from "./tools/get-reviews.js";
+import { getHotelReviewsJSON } from "./tools/get-reviews.js";
 import { summarizeHotel } from "./tools/summarize-hotel.js";
 import { bookingBrowser } from "./browser.js";
 
@@ -76,13 +76,13 @@ async function main() {
           }),
       async (args) => {
         try {
-          const result = await getHotelReviews({
+          const reviews = await getHotelReviewsJSON({
             url: args.url,
             limit: args.limit,
             skip: args.skip,
             sortBy: args["sort-by"] as "MOST_RELEVANT" | "MOST_RECENT",
           });
-          console.log(result);
+          console.log(JSON.stringify(reviews, null, 2));
           process.exit(0);
         } catch (err) {
           console.error(

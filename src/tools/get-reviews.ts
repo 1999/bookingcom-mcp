@@ -128,3 +128,68 @@ export async function getHotelReviews(
   const header = `Hotel has ${reviewsCount} reviews total. Showing ${fetched} (skip=${input.skip}, limit=${input.limit}, sort=${input.sortBy}):\n`;
   return header + "\n" + allParts.join("\n\n");
 }
+
+export async function getHotelReviewsJSON(rawInput: unknown): Promise<ReviewCard[]> {
+  const input = GetHotelReviewsSchema.parse(rawInput);
+
+  const url = new URL(input.url);
+  const cleanUrl = `${url.origin}${url.pathname}`;
+
+  const session = await bookingBrowser.ensureSession(cleanUrl);
+  const hotelBaseInput = await bookingBrowser.getBaseInputForHotel(cleanUrl);
+
+  const sorterLabel = input.sortBy === "MOST_RECENT" ? "newest" : "relevant";
+  const sorterFallback = input.sortBy === "MOST_RECENT" ? "NEWEST_FIRST" : "MOST_RELEVANT";
+  const sorterValue = bookingBrowser.resolveSorter(session, sorterLabel, sorterFallback);
+
+  const firstResult = await bookingBrowser.callGraphQL(session, {
+    ...hotelBaseInput,
+    sorter: sorterValue,
+    filters: { text: "" },
+    skip: input.skip,
+    limit: Math.min(MAX_PAGE_SIZE, input.limit),
+  });
+
+  if (firstResult.reviewCard.length === 0) {
+    return [];
+  }
+
+  const totalToFetch = Math.min(input.limit, firstResult.reviewsCount);
+  const resultsByOffset = new Map<number, ReviewCard[]>();
+
+  resultsByOffset.set(0, firstResult.reviewCard);
+
+  const remaining: number[] = [];
+  for (let off = firstResult.reviewCard.length; off < totalToFetch; off += MAX_PAGE_SIZE) {
+    remaining.push(off);
+  }
+
+  if (remaining.length > 0) {
+    let nextIdx = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(MAX_CONCURRENT_FETCHES, remaining.length) }, async () => {
+        while (true) {
+          const i = nextIdx++;
+          if (i >= remaining.length) return;
+          const offset = remaining[i];
+          const result = await bookingBrowser.callGraphQL(session, {
+            ...hotelBaseInput,
+            sorter: sorterValue,
+            filters: { text: "" },
+            skip: input.skip + offset,
+            limit: Math.min(MAX_PAGE_SIZE, input.limit - offset),
+          });
+          if (result.reviewCard.length > 0) {
+            resultsByOffset.set(offset, result.reviewCard);
+          }
+        }
+      })
+    );
+  }
+
+  const allReviews = [...resultsByOffset.entries()]
+    .sort(([a], [b]) => a - b)
+    .flatMap(([, cards]) => cards);
+
+  return allReviews.slice(0, totalToFetch);
+}
