@@ -7,7 +7,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "test:get_hotel_reviews:e2e": "npm run build && tsx test-get-hotel-reviews-e2e.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.2",
